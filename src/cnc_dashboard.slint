@@ -1,6 +1,8 @@
-import { Button, ScrollView,  StandardButton} from "std-widgets.slint";
+import { Button, ScrollView, StandardButton} from "std-widgets.slint";
 
+// --- Properties and Callbacks ---
 export component CNC_Dashboard inherits Window {
+    // Data from Rust
     in-out property <string> state: "Disconnected";
     in-out property <float> pos_x: 0.0;
     in-out property <float> pos_z: 0.0;
@@ -11,7 +13,9 @@ export component CNC_Dashboard inherits Window {
     in-out property <float> progress: 0.0;
     in-out property <string> job_status: "IDLE";
     in-out property <bool> show_z_offset_popup: false;
+    in-out property <string> file_path: ""; 
 
+    // Events to Rust
     callback jog(dx: float, dz: float);
     callback emergency_stop();
     callback load_file();
@@ -20,138 +24,254 @@ export component CNC_Dashboard inherits Window {
     callback pause_job();
     callback resume_job();
     callback stop_job();
-    callback show_z_offset_dialog();
     callback z_offset_submit(value: float);
     callback z_offset_cancel();
 
     preferred-width: 800px;
     preferred-height: 920px;
     title: "SVI INNERMILLING DASHBOARD";
+    background: #1e1e1e; // Dark background for the whole window
 
-    // === MAIN UI (unchanged) ===
+    // === MAIN UI Layout ===
     VerticalLayout {
         padding: 20px;
         spacing: 16px;
 
-        Text { text: "SVI INNERMILLING"; font-size: 28px; font-weight: 800; horizontal-alignment: center; color: #2c3e50; }
+        // Title
+        Text { text: "SVI INNERMILLING"; font-size: 28px; font-weight: 800; horizontal-alignment: center; color: #f1c40f; } // Yellow accent
 
-        Rectangle { background: #34495e; border-radius: 12px; 
-            Text { text: "State: \{root.state}"; color: #2ecc71; font-size: 24px; font-weight: 700; horizontal-alignment: center; }
+        // State Indicator
+        Rectangle { 
+            background: #34495e; 
+            border-radius: 12px; 
+            Text { 
+                // Using states to control color based on machine status
+                text: "State: \{root.state}"; 
+                font-size: 24px; 
+                font-weight: 700; 
+                horizontal-alignment: center; 
+                
+                states [
+                    running when root.state == "Run" || root.state == "Idle" : { color: #2ecc71; } // Green
+                    alarm when root.state == "Alarm" : { color: #e74c3c; } // Red
+                    disconnected when root.state == "Disconnected" : { color: #f39c12; } // Orange
+                ]
+            }
         }
 
-        GridLayout { spacing: 12px; Row {
-            Rectangle { background: #2980b9; border-radius: 10px;  VerticalLayout {
-                Text { text: "X: \{root.pos_x.to-fixed(3)} mm"; color: #f39c12; font-size: 22px; font-weight: 700; }
-                Text { text: "Z: \{root.pos_z.to-fixed(3)} mm"; color: #e74c3c; font-size: 22px; font-weight: 700; }
-            }}
-            Rectangle { background: #16a085; border-radius: 10px; VerticalLayout {
-                Text { text: "Feed: \{root.feedrate} mm/min"; color: #2ecc71; font-size: 20px; }
-                Text { text: "Spindle: \{root.spindle} RPM"; color: #3498db; font-size: 20px; }
-            }}
-        }}
+        // Position and Parameter Gauges
+        GridLayout { 
+            spacing: 12px; 
 
-        Rectangle { background: #f1c40f; border-radius: 10px;  VerticalLayout {
-            Text { text: "JOG ±10mm"; horizontal-alignment: center; font-weight: 700; color: #2c3e50; }
-            GridLayout { spacing: 8px; Row {
-                Button { text: "+X"; clicked => { root.jog(10.0, 0.0); } }
-                Button { text: "+Z"; clicked => { root.jog(0.0, 10.0); } }
-            } Row {
-                Button { text: "-X"; clicked => { root.jog(-10.0, 0.0); } }
-                Button { text: "-Z"; clicked => { root.jog(0.0, -10.0); } }
-            }}
-        }}
+            Rectangle { 
+                background: #2980b9; 
+                border-radius: 10px; 
+                VerticalLayout {
+                    Text { text: "X: \{root.pos_x.to-fixed(3)} mm"; color: #f39c12; font-size: 22px; font-weight: 700; }
+                    Text { text: "Z: \{root.pos_z.to-fixed(3)} mm"; color: #e74c3c; font-size: 22px; font-weight: 700; }
+                }
+            }
+            Rectangle { 
+                background: #16a085; 
+                border-radius: 10px; 
+                VerticalLayout {
+                    Text { text: "Feed: \{root.feedrate} mm/min"; color: #2ecc71; font-size: 20px; }
+                    Text { text: "Spindle: \{root.spindle} RPM"; color: #3498db; font-size: 20px; }
+                }
+            }
+        }
 
-        Button { text: "EMERGENCY STOP";  clicked => { root.emergency_stop(); } }
-
-        Rectangle { background: #2c3e50; border-radius: 10px; height: 300px; VerticalLayout { padding: 10px; spacing: 8px;
-            Text { text: "G-Code (\{root.gcode_lines.length} lines) • \{root.job_status}"; color: white; font-weight: 700; }
-            ScrollView { width: 100%; height: 100%; viewport-height: root.gcode_lines.length * 28px + 20px;
-                VerticalLayout { spacing: 2px;
-                    for line[i] in root.gcode_lines: Rectangle {
-                        background: i == root.current_line ? #e74c3c : #34495e;
-                        height: 28px; border-radius: 4px; border-width: i == root.current_line ? 2px : 0px; border-color: #e67e22;
-                        Text { text: line; color: i == root.current_line ? white : #bdc3c7; vertical-alignment: center; font-size: 13px; font-family: "monospace"; }
+        // Jog Controls
+        Rectangle { 
+            background: #f1c40f; 
+            border-radius: 10px;  
+            padding: 10px;
+            VerticalLayout {
+                Text { text: "MANUAL JOGGING (±10mm)"; horizontal-alignment: center; font-weight: 700; color: #2c3e50; }
+                GridLayout { 
+                    spacing: 8px; 
+                    // X-Axis
+                    HorizontalLayout {
+                        Button { text: "+X"; clicked => { root.jog(10.0, 0.0); } }
+                        Button { text: "-X"; clicked => { root.jog(-10.0, 0.0); } }
+                    }
+                    // Z-Axis
+                    HorizontalLayout {
+                        Button { text: "+Z"; clicked => { root.jog(0.0, 10.0); } }
+                        Button { text: "-Z"; clicked => { root.jog(0.0, -10.0); } }
                     }
                 }
             }
-        }}
+        }
 
-        Rectangle { background: #2c3e50; border-radius: 10px; height: 70px; VerticalLayout { padding: 12px; spacing: 8px;
-            HorizontalLayout {
-                Text { text: "Progress: \{root.progress.to-fixed(1)}%"; color: white; font-weight: 700; }
-                Text { text: "Line \{root.current_line + 1} / \{root.gcode_lines.length}"; color: #bdc3c7; }
-            }
-            Rectangle { background: #34495e; border-radius: 8px; height: 16px;
-                Rectangle { background: #27ae60; border-radius: 8px; width: root.progress / 100.0 * parent.width; height: parent.height;
-                    animate width { duration: 300ms; easing: ease-out; }
-                    states [
-                        paused when root.job_status == "PAUSED" || root.job_status == "WAITING FOR Z OFFSET" : { background: #e67e22; }
-                        alarm when root.state == "Alarm" : { background: #e74c3c; }
-                        complete when root.progress >= 99.9 : { background: #2ecc71; }
-                    ]
+        // Emergency Stop Button (Critical Action)
+        Button { 
+            text: "EMERGENCY STOP (CTRL+X)";  
+            clicked => { root.emergency_stop(); } 
+        }
+
+        // G-Code Viewer
+        Rectangle { 
+            background: #2c3e50; 
+            border-radius: 10px; 
+            height: 300px; 
+            VerticalLayout { 
+                padding: 10px; 
+                spacing: 8px;
+                Text { text: "File: \{root.file_path}"; color: #bdc3c7; font-weight: 500; } // <--- DISPLAY FILE PATH
+                Text { text: "G-Code (\{root.gcode_lines.length} lines) • \{root.job_status}"; color: white; font-weight: 700; }
+                
+                // Scrollable G-code lines
+                ScrollView { 
+                    width: 100%; 
+                    height: 100%; 
+                    // Calculate viewport size for smooth scrolling
+                    viewport-height: root.gcode_lines.length * 28px + 20px; 
+
+                    VerticalLayout { 
+                        spacing: 2px;
+                        for line[i] in root.gcode_lines: Rectangle {
+                            background: i == root.current_line ? #e74c3c : #34495e; // Highlight current line in red/orange
+                            height: 28px; 
+                            border-radius: 4px; 
+                            border-width: i == root.current_line ? 2px : 0px; 
+                            border-color: #e67e22;
+                            
+                            Text { 
+                                text: line; 
+                                color: i == root.current_line ? white : #bdc3c7; 
+                                vertical-alignment: center; 
+                                font-size: 13px; 
+                            }
+                        }
+                    }
                 }
             }
-        }}
+        }
 
-        HorizontalLayout { spacing: 12px; alignment: center;
+        // Progress Bar
+        Rectangle { 
+            background: #2c3e50; 
+            border-radius: 10px; 
+            height: 70px; 
+            VerticalLayout { 
+                padding: 12px; 
+                spacing: 8px;
+                
+                HorizontalLayout {
+                    Text { text: "Progress: \{root.progress.to-fixed(1)}%"; color: white; font-weight: 700; }
+                    Text { text: "Line \{root.current_line + 1} / \{root.gcode_lines.length}"; color: #bdc3c7; }
+                }
+                
+                Rectangle { 
+                    background: #34495e; 
+                    border-radius: 8px; 
+                    height: 16px;
+                    
+                    Rectangle { 
+                        background: #27ae60; 
+                        border-radius: 8px; 
+                        width: root.progress / 100.0 * parent.width; 
+                        height: parent.height;
+                        animate width { duration: 300ms; easing: ease-out; }
+                        
+                        states [
+                            paused when root.job_status == "PAUSED" || root.job_status == "WAITING FOR Z OFFSET" : { background: #e67e22; }
+                            alarm when root.state == "Alarm" : { background: #e74c3c; }
+                            complete when root.progress >= 99.9 : { background: #2ecc71; }
+                        ]
+                    }
+                }
+            }
+        }
+
+        // Job Control Buttons
+        HorizontalLayout { 
+            spacing: 12px; 
+            alignment: center;
+            
             Button { text: "LOAD"; clicked => { root.load_file(); } }
-            Button { text: "START"; enabled: root.gcode_lines.length > 0 && root.job_status == "IDLE"; clicked => { root.start_job(); } }
-            Button { text: "PAUSE"; enabled: root.job_status == "RUNNING"; clicked => { root.pause_job(); } }
-            Button { text: "RESUME"; enabled: root.job_status == "PAUSED" || root.job_status == "WAITING FOR Z OFFSET"; clicked => { root.resume_job(); } }
-            Button { text: "STOP"; enabled: root.job_status != "IDLE" && root.job_status != "COMPLETE"; clicked => { root.stop_job(); } }
+            Button { 
+                text: "START"; 
+                enabled: root.gcode_lines.length > 0 && root.job_status == "IDLE"; 
+                clicked => { root.start_job(); } 
+            }
+            Button { 
+                text: "PAUSE"; 
+                enabled: root.job_status == "RUNNING"; 
+                clicked => { root.pause_job(); } 
+            }
+            Button { 
+                text: "RESUME"; 
+                enabled: root.job_status == "PAUSED" || root.job_status == "WAITING FOR Z OFFSET"; 
+                clicked => { root.resume_job(); } 
+            }
+            Button { 
+                text: "STOP"; 
+                enabled: root.job_status != "IDLE" && root.job_status != "COMPLETE"; 
+                clicked => { root.stop_job(); } 
+            }
             Button { text: "CLEAR"; clicked => { root.clear_all(); } }
         }
     }
 
-    // === OFFICIAL POPUPWINDOW ===
-    z_offset_popup := PopupWindow {
+    // This rectangle covers the entire window when visible (the alternative to PopupWindow).
+    Rectangle {
         visible: root.show_z_offset_popup;
-        close-policy: no-auto-close;
-        // This is the correct way in Slint 1.7+
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 460px;
-        height: 300px;
+        
+        // 1. Overlay (full screen, semi-transparent black)
+        x: 0; y: 0; width: parent.width; height: parent.height;
+        background: rgba(0, 0, 0, 0.75);
 
+        // 2. Dialog Content (centered card)
+        Rectangle {
+            // Centering logic
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 460px;
+            height: 300px;
+            background: #2c3e50;
+            border-radius: 15px;
 
-        VerticalLayout {
-            padding: 30px;
-            spacing: 24px;
+            VerticalLayout {
+                padding: 30px;
+                spacing: 24px;
 
-            Text {
-                text: "G92 Z-offset command detected.\nPlease measure with paper gauge and enter actual Z value:";
-                color: white;
-                font-size: 18px;
-                horizontal-alignment: center;
-            }
-
-            input_field := TextInput {
-                text: "0.000";
-                font-size: 32px;
-                font-weight: 700;
-                color: #f1c40f;
-                horizontal-alignment: center;
-                input-type: number;
-                single-line: true;
-            }
-
-            HorizontalLayout {
-                spacing: 20px;
-                alignment: center;
-
-                Button {
-                    text: "CANCEL JOB";
-                    clicked => {
-                        root.z_offset_cancel();
-                        z_offset_popup.close();
-                    }
+                Text {
+                    text: "Z-offset command detected.\nPlease measure and enter actual Z value:";
+                    color: #f1c40f;
+                    font-size: 18px;
+                    horizontal-alignment: center;
                 }
 
-                Button {
-                    text: "APPLY & CONTINUE";
-                    clicked => {
-                        root.z_offset_submit(input_field.text.to-float());
-                        z_offset_popup.close();
+                // Editable Text Element
+                input_field := TextInput {
+                    text: "0.000";
+                    font-size: 32px;
+                    font-weight: 700;
+                    color: #2ecc71; // Green for input focus
+                    horizontal-alignment: center;
+                    input-type: number;
+                    single-line: true;
+                }
+
+                HorizontalLayout {
+                    spacing: 20px;
+                    alignment: center;
+
+                    // Visibility control handled by Rust logic (which sets show_z_offset_popup=false)
+                    Button {
+                        text: "CANCEL JOB";
+                        clicked => {
+                            root.z_offset_cancel();
+                        }
+                    }
+
+                    Button {
+                        text: "APPLY & CONTINUE";
+                        clicked => {
+                            root.z_offset_submit(input_field.text.to-float());
+                        }
                     }
                 }
             }
