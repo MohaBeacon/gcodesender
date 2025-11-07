@@ -98,6 +98,8 @@ impl JobController {
                 JobCommand::SetZOffset(v) => this.set_z_offset(v).await,
                 JobCommand::CancelZOffset => this.cancel_z_offset().await,
                 JobCommand::SendImmediate(cmd) => {
+                    // ADDED: Print immediate commands sent to the machine
+                    println!("Sending Immediate Command: \"{}\"", cmd.trim()); 
                     let conn = this.conn.clone();
                     tokio::spawn(async move {
                         let _ = conn.send_command(&cmd).await; 
@@ -143,6 +145,7 @@ impl JobController {
 
         // 2. Update Slint UI properties
         let ui = self.ui_handle.clone();
+        let path_ss = path.to_string().into();
 
         // Collect the actual data (which is Send) to be moved into the event loop
         let lines_data: Vec<SharedString> = self.gcode_lines.lock().await.iter()
@@ -157,6 +160,7 @@ impl JobController {
 
             if let Some(ui) = ui.upgrade() {
                 ui.set_gcode_lines(lines_model);
+                ui.set_file_path(path_ss); 
                 ui.set_current_line(-1);
                 ui.set_progress(0.0);
                 ui.set_job_status("IDLE".into());
@@ -172,7 +176,8 @@ impl JobController {
         re.replace_all(line, |caps: &regex::Captures| {
             // Parse the existing Z value (excluding the 'Z')
             let old: f32 = caps[1][1..].parse().unwrap_or(0.0);
-            format!("Z{:.4}", old + offset)
+            // MODIFIED: Changed format to "{:.2}" to ensure only 2 decimal points are output.
+            format!("Z{:.2}", old + offset)
         }).to_string()
     }
 
@@ -196,7 +201,8 @@ impl JobController {
         let total = lines.len() as f32;
 
         let handle = tokio::spawn(async move {
-            let idle_re = regex::Regex::new(r"<Idle|Run").unwrap();
+            // FIX: Only wait for Idle state to ensure the previous motion is complete.
+            let idle_re = regex::Regex::new(r"<Idle").unwrap();
 
             for (i, line) in lines.iter().enumerate() {
                 let current_status = status.lock().await.clone();
@@ -206,7 +212,8 @@ impl JobController {
                 }
                 if matches!(*status.lock().await, JobStatus::Stopping | JobStatus::Error(_)) { break; }
 
-                if line.contains("G92") {
+                // MODIFIED: Check for "G54" instead of "G92"
+                if line.contains("G54") {
                     *status.lock().await = JobStatus::WaitingForZOffset;
                     let _ = invoke_from_event_loop({
                         let ui = ui.clone();
@@ -229,12 +236,18 @@ impl JobController {
                     *status.lock().await = JobStatus::Running;
                 }
 
+                // Get the command with the applied Z-offset
                 let cmd = Self::apply_offset_to_line(line, *z_offset.lock().await);
+                
+                // ADDED: Print statement for the command being sent
+                println!("Sending Line {}: Original: \"{}\", Modified: \"{}\"", i + 1, line, cmd); 
+
                 if conn.send_command(&cmd).await.is_err() {
                     *status.lock().await = JobStatus::Error("Send failed".into());
                     break;
                 }
 
+                // Polling loop now strictly waits for the machine to return to the <Idle state
                 let deadline = Instant::now() + Duration::from_secs(30);
                 while Instant::now() < deadline {
                     let status_report = conn.send_command("?").await.unwrap_or_default();
