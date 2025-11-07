@@ -6,7 +6,9 @@ use crate::job_controller::{JobCommand, JobController};
 use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
-use slint::SharedString;
+use slint::{
+    ModelRc, SharedString, StandardListViewItem, VecModel,
+};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time;
@@ -21,11 +23,10 @@ struct Args {
     file: Option<String>,
 }
 
-/// Parses the full GRBL status report string into required UI values.
 fn parse_status(status: &str) -> (SharedString, f32, f32, f32, f32) {
     let state_re = Regex::new(r"<(\w+)").unwrap();
-    let pos_re = Regex::new(r"MPos:([-\d.]+),[-\d.]+,([-\d.]+)").unwrap(); 
-    let fs_re = Regex::new(r"FS:([-\d.]+),([-\d.]+)").unwrap(); 
+    let pos_re = Regex::new(r"MPos:([-\d.]+),[-\d.]+,([-\d.]+)").unwrap();
+    let fs_re = Regex::new(r"FS:([-\d.]+),([-\d.]+)").unwrap();
 
     let state = state_re.captures(status)
         .and_then(|c| c.get(1))
@@ -43,6 +44,9 @@ fn parse_status(status: &str) -> (SharedString, f32, f32, f32, f32) {
     (state.into(), x, z, f, s)
 }
 
+// NOTE: string_vec_to_model is no longer needed since it's correctly handled 
+// in job_controller::update_gcode_ui.
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -53,12 +57,10 @@ async fn main() -> Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<JobCommand>();
 
     let conn = Arc::new(Connection::open(&args.conn).await?);
-    
-    // Pass the initial file from clap arguments into the JobController
     let job = JobController::new(conn.clone(), ui_weak.clone(), cmd_rx, args.file.clone());
-    // Use Arc::clone() to share the controller for the spawned task
     tokio::spawn(job.clone().run_command_listener());
 
+    // Unlock on startup if alarm
     if conn.send_command("?").await.as_ref().map(|s| s.contains("Alarm")).unwrap_or(false) {
         let _ = conn.send_command("$X").await;
     }
@@ -72,12 +74,12 @@ async fn main() -> Result<()> {
                     Ok(s) => { let _ = status_tx.send(s); }
                     Err(_) => { let _ = status_tx.send("<Disconnected>".into()); }
                 }
-                time::sleep(tokio::time::Duration::from_millis(200)).await;
+                time::sleep(time::Duration::from_millis(200)).await;
             }
         }
     });
 
-    // UI updater (parsing off-thread)
+    // UI status updater
     tokio::spawn({
         let ui_weak = ui_weak.clone();
         async move {
@@ -96,13 +98,12 @@ async fn main() -> Result<()> {
                         ui.set_feedrate(f);
                         ui.set_spindle(s);
                     }
-                }).unwrap_or_default();
+                }).unwrap();
             }
         }
     });
 
-    // --- UI Callbacks ---
-
+    // === CALLBACKS ===
     ui.on_jog({
         let tx = cmd_tx.clone();
         move |dx, dz| {
@@ -115,8 +116,8 @@ async fn main() -> Result<()> {
     ui.on_emergency_stop({
         let tx = cmd_tx.clone();
         move || {
-            let _ = tx.send(JobCommand::SendImmediate("\x18".into())); 
-            let _ = tx.send(JobCommand::Stop); 
+            let _ = tx.send(JobCommand::SendImmediate("\x18".into()));
+            let _ = tx.send(JobCommand::Stop);
         }
     });
 
@@ -136,40 +137,53 @@ async fn main() -> Result<()> {
         let ui_w = ui_weak.clone();
         move || {
             if let Some(ui) = ui_w.upgrade() {
-                // Reset G-code viewer state
-                ui.set_gcode_lines(Default::default());
-                ui.set_current_line(-1); 
+                // Clear the model using default, which is an empty model
+                ui.set_gcode_lines(ModelRc::default());
+                ui.set_current_line(-1);
+                ui.set_selected_line_index(-1);
                 ui.set_progress(0.0);
                 ui.set_job_status("IDLE".into());
-                // The file_path property is likely bound to the controller, so we skip setting it here.
-                // We rely on status polling to update machine position/state.
+                ui.set_file_path("".into());
             }
         }
     });
-    
+
     ui.on_start_job({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::Start); } });
+    ui.on_start_paused_job({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::StartPaused); } });
     ui.on_pause_job({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::Pause); } });
     ui.on_resume_job({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::Resume); } });
     ui.on_stop_job({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::Stop); } });
-
-    // Z-Offset callbacks
-    let job_controller_c = job.clone();
-    ui.on_z_offset_submit(move |value| {
-        let controller_c = job_controller_c.clone();
-        tokio::task::spawn(async move {
-            controller_c.set_z_offset(value).await;
-        });
+    ui.on_send_next_line({ let tx = cmd_tx.clone(); move || { let _ = tx.send(JobCommand::SendNextLine); } });
+    
+    // Implement start_job_from_selected
+    ui.on_start_job_from_selected({
+        let tx = cmd_tx.clone();
+        let ui_w = ui_weak.clone();
+        move || {
+            if let Some(ui) = ui_w.upgrade() {
+                let index = ui.get_selected_line_index();
+                if index >= 0 {
+                    // Update the next_line_index in JobController before starting
+                    let _ = tx.send(JobCommand::SetNextIndex(index as usize));
+                    let _ = tx.send(JobCommand::Start);
+                }
+            }
+        }
     });
 
-    let job_controller_c = job.clone();
+    // Z-offset
+    let job_c = job.clone();
+    ui.on_z_offset_submit(move |v| {
+        let c = job_c.clone();
+        tokio::spawn(async move { c.set_z_offset(v).await; });
+    });
+
+    let job_c = job.clone();
     ui.on_z_offset_cancel(move || {
-        let controller_c = job_controller_c.clone();
-        tokio::task::spawn(async move {
-            controller_c.cancel_z_offset().await;
-        });
+        let c = job_c.clone();
+        tokio::spawn(async move { c.cancel_z_offset().await; });
     });
 
-    // FIX: Changed non-existent method to standard run()
     ui.run()?;
     Ok(())
 }

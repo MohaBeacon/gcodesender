@@ -1,0 +1,61 @@
+// CustomButton.slint - 100% Rectangle-based, no Button widget
+export component Button inherits Rectangle {
+    in property <string> text: "BUTTON";
+    in property <bool> enabled: true;
+    in property <bool> primary: true;           // true = blue, false = red/orange
+    in property <length> radius: 12px;
+    in property <length> font_size: 16px;
+
+    callback clicked();
+
+    // Dynamic colors
+    in property <brush> bg_normal:      primary ? #3498db : #e74c3c;
+    in property <brush> bg_hover:       primary ? #2980b9 : #c0392b;
+    in property <brush> bg_pressed:     primary ? #1f6391 : #992d22;
+    in property <brush> bg_disabled:    #7f8c8d;
+    in property <brush> border_normal:  primary ? #5dade2 : #e74c3c;
+    in property <brush> border_pressed: #f1c40f;  // Yellow glow on press
+
+    background: enabled ? 
+        (touch.pressed ? bg_pressed : (touch.has-hover ? bg_hover : bg_normal))
+        : bg_disabled;
+
+    border-width: 2px;
+    border-color: touch.pressed ? border_pressed : border_normal;
+
+    border-radius: root.radius;
+    min-height: 56px;
+    min-width: 140px;
+
+    // Shadow (disabled when not enabled)
+    drop-shadow-blur: enabled ? 10px : 0px;
+    drop-shadow-color: enabled ? rgba(0, 0, 0, 0.5) : transparent;
+    drop-shadow-offset-y: enabled ? 6px : 0px;
+
+    // Touch handling
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    // Layout
+    HorizontalLayout {
+        padding: 16px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: enabled ? white : #95a5a6;
+            font-size: root.font_size;
+            font-weight: 800;
+            letter-spacing: 1px;
+            wrap: word-wrap;
+        }
+    }
+
+    // Smooth animations
+    animate background, border-color, drop-shadow-offset-y {
+        duration: 180ms;
+        easing: ease-in-out;
+    }
+}
